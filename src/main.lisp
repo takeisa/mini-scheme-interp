@@ -156,8 +156,69 @@ and (and expr1 expr2...) if there are several exprs."
   (declare (ignore depth))
   (format stream "PROC{~a}" (or (proc-name proc) '??)))
 
+;; call/cc version
+(defun interp (expr env cc)
+  "Interpret(evaluate) the expression expr in the envrionemt env,
+and pass the result to the continuation cc.s"
+  (format t "interp expr=~a env=~a~%" expr env)
+  (cond
+    ((symbolp expr) (funcall cc (get-var expr env)))
+    ((atom expr) (funcall cc expr))
+    ((scheme-macro (car expr))
+     (let ((expand-expr (scheme-macro-expand expr)))
+       (format t "macro-expand: befor ~a~%" expr)
+       (format t "macro-expand: after ~a~%" expand-expr)
+       (interp expand-expr env cc)))
+    ((case (car expr)
+       (quote (funcall cc (cadr expr)))
+       (begin (interp-begin (cdr expr) env cc))
+       ;; 値の設定が継続処理なので値を先に評価する？
+       (set! (interp (caddr expr) env
+                     #'(lambda (val) (funcall cc (set-var! (cadr expr) val env)))))
+       (if (interp (cadr expr) env
+                   #'(lambda (pred)
+                       (interp (if pred (caddr expr) (cadddr expr)) env cc))))
+       (lambda (let ((params (cadr expr))
+                     (code (maybe-add 'begin (cddr expr))))
+                 ;; (format t "lambda params=~a~%" params)
+                 ;; (format t "lambda code=~a~%" code)
+                 (funcall cc
+                          #'(lambda (cont &rest args)
+                              ;; (format t "lambda args=~a~%" args)
+                              (interp code (extend-env params args env) cont)))))
+       (t (interp-call expr env cc))))))
+
+(defun interp-begin (body env cc)
+  "Interpret each element of body, passing the last to CC."
+  (interp (car body) env
+          #'(lambda (val)
+            ;; (car body)が最後の要素なので、評価結果valをccに渡す。
+            (if (null (cdr body))
+                (funcall cc val)
+                (interp-begin (cdr body) env cc)))))
+
+(defun interp-call (call env cc)
+  "Interpret the call (f x...) and pass the result to CC."
+  (format t "interp-call: ~a ~a~%" call env)
+  (map-interp call env
+              #'(lambda (fn-and-args)
+                  (format t "apply: ~a~%" fn-and-args)
+                  (apply (car fn-and-args)
+                         cc
+                         (cdr fn-and-args)))))
+
+(defun map-interp (list env cc)
+  "Interpret each element of list, and pass the list to cc."
+  (format t "map-interp: ~a ~a~%" list env)
+  (if (null list)
+      (funcall cc nil)
+      (interp (car list) env
+              #'(lambda (x)
+                  (map-interp (cdr list) env
+                              #'(lambda (y) (funcall cc (cons x y))))))))
+
 ;; tail recursion optimize
-(defun interp (expr &optional env)
+(defun interp-tail-recursion-optimize (expr &optional env)
   "Interpret(evaluate) the expression expr in the envrionemt env."
   ;; (format t "interp expr=~a env=~a~%" expr env)
   (prog ()
@@ -255,6 +316,42 @@ and (and expr1 expr2...) if there are several exprs."
   (loop
     (format t "~&==> ")
     (print (interp (read) nil))))
+
+;; REPL call/cc version 
+(defun init-scheme-proc-cc (f)
+  "Define a Scheme procedure as a corresponding CL functions."
+  (if (listp f)
+      (set-global-var! (car f)
+                       #'(lambda (cont &rest args)
+                           (funcall cont (apply (symbol-function (cadr f)) args))))
+      (init-scheme-proc-cc (list f f))))
+
+;; REPL call/cc version 
+(defun init-scheme-interp-cc ()
+  "Initialize the scheme interpreter with some global variables."
+  (dolist (f *scheme-procs*)
+    (init-scheme-proc-cc f))
+  (set-global-var! 'call/cc #'call/cc)
+  (set-global-var! 'call-with-current-continuation #'call/cc)
+  (set-global-var! t t)
+  (set-global-var! nil nil))
+
+;; ccはinterpから渡される。
+;; computationは (call/cc computaion) ※computationはcontinuationを引数にとる関数。
+(defun call/cc (cc computation)
+  (funcall computation cc
+           #'(lambda (cont val)
+               (declare (ignore cont))
+               (funcall cc val))))
+
+;; REPL call/cc version 
+(defun scheme-cc ()
+  "A Scheme read-eval-print loop (using interp).
+Handles call/cc by explicitly passing continuations."
+  (init-scheme-interp-cc)
+  (loop
+    (format t "~&==> ")
+    (interp (read) nil #'print)))
 
 (defun test1 ()
   (set-global-var! 'nil nil)
