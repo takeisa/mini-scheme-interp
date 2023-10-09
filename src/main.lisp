@@ -148,8 +148,61 @@ and (and expr1 expr2...) if there are several exprs."
      ,@(mapcar #'(lambda (v) `(set! ,@v)) bindings)
      ,@body))
 
-;; TODO 正しい構文かチェックする。
+(defstruct (proc (:print-function print-proc))
+  "Represent a Scheme procedure"
+  code (env nil) (name nil) (params nil))
+
+(defun print-proc (proc &optional (stream *standard-output*) depth)
+  (declare (ignore depth))
+  (format stream "PROC{~a}" (or (proc-name proc) '??)))
+
+;; tail recursion optimize
 (defun interp (expr &optional env)
+  "Interpret(evaluate) the expression expr in the envrionemt env."
+  ;; (format t "interp expr=~a env=~a~%" expr env)
+  (prog ()
+     :INTERP
+     (return
+       (cond
+         ((symbolp expr) (get-var expr env))
+         ((atom expr) expr)
+         ((scheme-macro (car expr))
+          (let ((expand-expr (scheme-macro-expand expr)))
+            (format t "macro-expand: befor ~a~%" expr)
+            (format t "macro-expand: after ~a~%" expand-expr)
+            (setf expr expand-expr)
+            (go :INTERP)))
+         ((case (car expr)
+            (quote (cadr expr))
+            (begin
+             ;; beginを取り除く
+             (pop expr)
+             ;; 最後の式の一つ手前まで評価する。
+             (loop while (cdr expr)
+                   do (interp (pop expr) env))
+             ;; 最後の式をexprに設定して最初へ
+             (setf expr (car expr))
+             (go :INTERP))
+            (set! (set-var! (cadr expr) (interp (caddr expr) env) env))
+            (if (setf expr
+                      (if (interp (cadr expr) env)
+                          (caddr expr)
+                          (cadddr expr)))
+                (go :INTERP))
+            (lambda
+                (make-proc :name "lambda" :params (cadr expr) :env env
+                           :code (maybe-add 'begin (cddr expr))))
+            ;; 手続き適用
+            (t (let ((proc (interp (car expr) env))
+                     (args (mapcar #'(lambda (expr2) (interp expr2 env)) (cdr expr))))
+                 (if (proc-p proc)
+                     (progn
+                       (setf expr (proc-code proc))
+                       (setf env (extend-env (proc-params proc) args (proc-env proc)))
+                       (go :INTERP))
+                     (apply proc args))))))))))
+
+(defun interp-no-tail-recursion-optimize (expr &optional env)
   "Interpret(evaluate) the expression expr in the envrionemt env."
   ;; (format t "interp expr=~a env=~a~%" expr env)
   (cond
@@ -157,8 +210,8 @@ and (and expr1 expr2...) if there are several exprs."
     ((atom expr) expr)
     ((scheme-macro (car expr))
      (let ((expand-expr (scheme-macro-expand expr)))
-       (format t "macro-expand: befor ~a~%" expr)
-       (format t "macro-expand: after ~a~%" expand-expr)
+       ;; (format t "macro-expand: befor ~a~%" expr)
+       ;; (format t "macro-expand: after ~a~%" expand-expr)
        (interp expand-expr env)))
     ((case (car expr)
        ;; TODO cadrで正しい？
@@ -220,3 +273,5 @@ and (and expr1 expr2...) if there are several exprs."
                (newline)
                (table f (+ start 1) end))))))
 
+;; for test
+;; (interp '(define (traverse lst) (if lst (traverse (cdr lst))))' nil)
